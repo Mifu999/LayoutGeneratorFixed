@@ -1,0 +1,937 @@
+#include "LayoutGeneratorLayer.h"
+#include "../GameObjectPool/GameObjectPool.h"
+#include "../PoolObject/PoolObject.h"
+#include "../SettingsPopup/SettingsPopup.h"
+
+#define MACRO_PLAYER_DATA                                                                             \
+    LevelEditorLayer *editor = LevelEditorLayer::get();                                               \
+    PlayerObject *player = editor->m_player1;                                                         \
+    CCPoint playerPos = player->getPosition();                                                        \
+    CCPoint playerVel = CCPoint{(float)player->getCurrentXVelocity(), (float)player->getYVelocity()}; \
+    bool upsideDown = player->m_isUpsideDown;                                                         \
+    int sign = upsideDown ? -1 : 1;                                                                   \
+    PoolState gamemode = getPlayerGamemode(player);                                                   \
+    int state = getPlayerState(player);
+
+const int GLOBAL_EXCLUDE_TAGS = 0;    // e.g. PoolTag::GAMEMODE
+const float GLOBAL_SONG_OFFSET = 0.f; // (previously 0.24) offset for better sync - experimental
+
+std::mt19937 &getRng()
+{
+    static std::mt19937 rng(std::random_device{}());
+    return rng;
+}
+
+LayoutGeneratorLayer *LayoutGeneratorLayer::create()
+{
+    auto ret = new LayoutGeneratorLayer();
+    if (ret->init())
+    {
+        ret->autorelease();
+        return ret;
+    }
+
+    delete ret;
+    return nullptr;
+}
+
+bool LayoutGeneratorLayer::init()
+{
+    if (!CCLayer::init())
+    {
+        return false;
+    }
+
+    // parse hitboxes file
+    // auto path = geode::Mod::get()->getResourcesDir() / "hitboxes.json";
+    // std::ifstream file(path);
+    // if (!file.is_open())
+    // {
+    //     log::error("Failed to open file");
+    //     return false;
+    // }
+
+    // auto result = matjson::parse(file);
+    // if (result.isErr())
+    // {
+    //     log::error("Failed to read JSON");
+    //     return false;
+    // }
+
+    // auto json = result.unwrap();
+    // auto block = json["8"].asArray().unwrap();
+    // log::info("{}, {}", block[0].asString(), block[1].asString());
+
+    // for debugging CCRects
+    // log::debug("{} {} {} {}", rect.getMinX(), rect.getMinY(), rect.getMaxX(), rect.getMaxY());
+
+    // schedule update
+    scheduleUpdate();
+
+    return true;
+}
+
+void LayoutGeneratorLayer::reset()
+{
+    m_isBuilding = true;
+    m_boundsCeil = 1300.f;
+    m_boundsFloor = 90.f;
+    m_elapsedTime = LevelEditorLayer::get()->m_levelSettings->m_songOffset + GLOBAL_SONG_OFFSET;
+    m_hasTappedThisGamemode = false;
+    m_lastGamemodePortalPos = CCPoint{0.f, m_boundsFloor};
+    m_lastPlacedFish = nullptr;
+    m_lastPlacedFishPos = CCPoint{};
+    m_lastPlayerGamemode = PoolState::GAMEMODE_CUBE;
+    m_lastSpikeBottomPos = CCPoint{};
+    m_lastSpikeTopPos = CCPoint{};
+    m_placeAgainTimer = 0;
+    m_playerTrail.clear();
+    m_shouldTap = PoolTap::NO;
+    m_shouldTapTimer = 0;
+    m_tapBalance = 3.f; // don't make the player jump straight away
+}
+
+void LayoutGeneratorLayer::update(float dt)
+{
+    CCLayer::update(dt);
+
+    if (!m_isBuilding)
+        return;
+
+    MACRO_PLAYER_DATA;
+
+    // paused
+    if (!m_playerTrail.empty() && m_playerTrail[m_playerTrail.size() - 1].pos == playerPos)
+        return;
+    m_playerTrail.push_back(PlayerTrailData{
+        playerPos, playerVel, player->getObjectRect().size.width, state, m_boundsCeil, m_boundsFloor});
+
+    // update gamemode bounds
+    if (gamemode != m_lastPlayerGamemode)
+    {
+        if (gamemode & PoolState::NO_BOUNDS)
+        {
+            m_boundsFloor = 90.f;
+            m_boundsCeil = 1300.f;
+        }
+        else
+        {
+            float height;
+            if (gamemode == PoolState::GAMEMODE_BALL)
+                height = 240.f;
+            else if (gamemode == PoolState::GAMEMODE_SPIDER)
+                height = 270.f;
+            else // ship and ufo
+                height = 300.f;
+            m_boundsFloor = std::max(90.f, 30.f * std::ceil((player->m_lastPortalPos.y - (height / 2.f + 30.f)) / 30.f));
+            m_boundsCeil = m_boundsFloor + height;
+        }
+        m_hasTappedThisGamemode = false;
+        m_lastGamemodePortalPos = player->m_lastPortalPos;
+    }
+
+    // place object on beat (spb = seconds per beat)
+    float spb = 60.f / m_bpm;
+    bool onBeat = (int)(m_elapsedTime / spb) != (int)((m_elapsedTime + dt) / spb);
+    bool onHalfBeat = (int)(m_elapsedTime / spb * 2.f) != (int)((m_elapsedTime + dt) / spb * 2.f);
+
+    bool ok = false;
+    int requireTap = 0;
+    if (m_placeAgainTimer >= 0)
+        m_placeAgainTimer--;
+    if (m_placeAgainTimer == 0)
+    {
+        ok = true;
+        if (m_lastPlacedFish->tags & PoolTag::SPIDER)
+            requireTap = PoolTap::NO | PoolTap::ANY;
+    }
+    // avoid reaching terminal velocity (-15.f)
+    else if (playerVel.y * sign < -10.f && onHalfBeat)
+        ok = true;
+    // beat
+    else if (std::uniform_int_distribution<int>(1, 16)(getRng()) > 1 && onBeat)
+        ok = true;
+    // half beat
+    else if (std::uniform_int_distribution<int>(1, 2)(getRng()) == 1 && onHalfBeat)
+    {
+        ok = true;
+        requireTap = PoolTap::TAP_OR_HOLD;
+    }
+    // flying fallback
+    else if (gamemode & PoolState::FLYING && onHalfBeat)
+        ok = true;
+
+    // continue placing a block platform
+    if (m_lastPlacedFish && m_lastPlacedFish->keepActive)
+    {
+        placeFish(m_lastPlacedFish, !ok, true);
+    }
+
+    // place new object
+    if (ok)
+    {
+        auto fish = fishLegally(onBeat, requireTap);
+        if (fish)
+        {
+            placeFish(fish);
+
+            // adjust tap balance
+            if (fish->tap != PoolTap::ANY)
+            {
+                m_shouldTap = fish->tap;
+            }
+            if (fish->tap == PoolTap::NO)
+            {
+                m_tapBalance -= 2.f;
+            }
+            else if (fish->tap == PoolTap::TAP)
+            {
+                m_tapBalance += 1.f;
+            }
+            else if (fish->tap == PoolTap::TAP_DELAYED)
+            {
+                m_tapBalance += 1.f;
+                m_shouldTap = PoolTap::TAP;
+                m_shouldTapTimer = 3;
+            }
+            else if (fish->tap == PoolTap::HOLD || fish->tap == PoolTap::HOLD_RANDOM)
+            {
+                m_tapBalance += .5f;
+            }
+            else if (fish->tap == PoolTap::RANDOM)
+            {
+                m_tapBalance += .5f;
+            }
+            else if (fish->tap == PoolTap::ANY)
+            {
+                m_tapBalance -= 1.f;
+                if (gamemode & PoolState::NOT_FLYING)
+                    m_shouldTap = PoolTap::NO;
+                else if (gamemode & PoolState::HOLD_FLYING && std::uniform_int_distribution<int>(1, 2)(getRng()) == 1)
+                    m_shouldTap = std::uniform_int_distribution<int>(1, 2)(getRng()) == 1 ? PoolTap::NO : PoolTap::HOLD;
+                // place another object soon, because we can
+                if (std::uniform_int_distribution<int>(1, 2)(getRng()) == 1)
+                {
+                    m_placeAgainTimer = 2;
+                    // ensure we have enough ground for the next fish if the player is grounded currently
+                    if (state & PoolState::GROUNDED)
+                    {
+                        auto fish2 = PoolObject("!! GROUNDED PLACEAGAIN !!")
+                                         .withObjectId(ObjectId::BLOCK)
+                                         .withAlign(PoolAlign::BC, PoolAlign::TC);
+                        placeFish(&fish2);
+                    }
+                }
+            }
+
+            // place a no-tap object after a spider tap
+            if (fish->tags & PoolTag::SPIDER && std::uniform_int_distribution<int>(1, 2)(getRng()) == 1)
+            {
+                m_placeAgainTimer = 2;
+            }
+
+            // make sure the player lets go of jump for at least 1 frame before tapping a ring or robot jump
+            if (fish->tap & PoolTap::TAP_OR_HOLD && player->m_holdingButtons[(int)PlayerButton::Jump])
+            {
+                if (fish->tags & PoolTag::RING || (state & (PoolState::GAMEMODE_BALL | PoolState::GAMEMODE_ROBOT) && fish->tags & PoolTag::BLOCK) || player->m_isDashing)
+                {
+                    player->releaseButton(PlayerButton::Jump);
+                    m_shouldTapTimer = std::max(1, m_shouldTapTimer);
+                }
+            }
+        }
+        else
+            log::warn("fishing failed! last id: {}", m_fishId);
+    }
+
+    // spikes v2
+    // const float evilSpikeMargin = trail.playerSize * 15.f + 7.f;
+    const float scanBehindPlayer = 60.f;
+    float yMin = FLT_MAX;
+    float yMax = -FLT_MAX;
+    PlayerTrailData leftTrail;
+    PlayerTrailData midTrail;
+    float spikeX = playerPos.x - scanBehindPlayer / 2;
+    for (auto it = m_playerTrail.rbegin(); it != m_playerTrail.rend(); ++it)
+    {
+        auto trail = *it;
+        leftTrail = trail;
+        if (trail.pos.x > spikeX)
+            midTrail = trail;
+        if (trail.pos.x < playerPos.x - scanBehindPlayer)
+            break;
+        float spikeMargin;
+        if (trail.state & PoolState::GAMEMODE_WAVE)
+            spikeMargin = 45.f + (trail.state & PoolState::SIZE_MINI ? 10.f : 0.f);
+        else if (trail.state & PoolState::GAMEMODE_SHIP)
+            spikeMargin = 65.f - (trail.state & PoolState::SIZE_MINI ? 10.f : 0.f);
+        else
+            spikeMargin = 70.f;
+        yMin = std::min(yMin, trail.pos.y - spikeMargin);
+        yMax = std::max(yMax, trail.pos.y + spikeMargin);
+    }
+    auto playerRect = player->getObjectRect();
+    placeSpikeBoundary(
+        CCPoint{spikeX, yMin},
+        CCPoint{spikeX, yMax},
+        leftTrail.pos,
+        midTrail.pos,
+        playerPos,
+        midTrail.state,
+        (leftTrail.state & PoolState::GAMEMODE_SPIDER || state & PoolState::GAMEMODE_SPIDER
+             // when performing a spider teleport, the player uses the inner rect for collision,
+             // which is approximately the same width as a spike (6). except for wave, which is not handled.
+             // it does not change in mini size.
+             ? 6.f
+             : playerRect.size.width) +
+            // add 5, which is a bit less than one spike width.
+            5.f);
+
+    // jumping
+    if (m_shouldTapTimer > 0)
+        m_shouldTapTimer--;
+    else if (m_shouldTap == PoolTap::RANDOM)
+    {
+        // 50% chance to toggle the jump button, every couple of frames
+        if (std::uniform_int_distribution<int>(1, 2)(getRng()) == 1)
+        {
+            m_shouldTapTimer = std::uniform_int_distribution<int>(2, 4)(getRng());
+            if (player->m_holdingButtons[(int)PlayerButton::Jump])
+                player->releaseButton(PlayerButton::Jump);
+            else
+                player->pushButton(PlayerButton::Jump);
+        }
+    }
+    else if (
+        ((bool)(m_shouldTap & PoolTap::TAP_OR_HOLD)) != player->m_holdingButtons[(int)PlayerButton::Jump])
+    {
+        if (m_shouldTap & PoolTap::TAP_OR_HOLD)
+        {
+            player->pushButton(PlayerButton::Jump);
+            m_hasTappedThisGamemode = true;
+
+            // release the button if required
+            if (m_shouldTap & (PoolTap::TAP | PoolTap::HOLD_RANDOM))
+            {
+                // delay a couple frames to simulate realistic clicking
+                // however, ufo can 'hold to fly' when using player->pushButton, so don't do it then
+                if (!(state & PoolState::TAP_FLYING))
+                {
+                    // hold for a random duration
+                    if (m_shouldTap == PoolTap::HOLD_RANDOM)
+                        m_shouldTapTimer = std::uniform_int_distribution<int>(2, 20)(getRng());
+                    else
+                        m_shouldTapTimer = 3;
+                }
+                else
+                {
+                    auto jumpIndicatorObj = editor->createObject(ObjectId::AIRBORNE_JUMP_INDICATOR, playerPos, true);
+                    jumpIndicatorObj->updateCustomScaleX(0.5);
+                    jumpIndicatorObj->updateCustomScaleY(0.5);
+                    jumpIndicatorObj->m_editorLayer = 1;
+                }
+                m_shouldTap = PoolTap::NO;
+            }
+        }
+        else
+            player->releaseButton(PlayerButton::Jump);
+    }
+
+    // mark trail
+    auto trailObj = editor->createObject(player->m_holdingButtons[(int)PlayerButton::Jump] ? 1765 : 1764, playerPos, true);
+    trailObj->updateCustomScaleX(0.5);
+    trailObj->updateCustomScaleY(0.5);
+    trailObj->m_editorLayer = 1;
+
+    m_elapsedTime += dt;
+    m_lastPlayerGamemode = gamemode;
+}
+
+const PoolObject *LayoutGeneratorLayer::fishLegally(bool onBeat, int requireTap)
+{
+    MACRO_PLAYER_DATA;
+
+    // playerFollowFloats usage
+    // auto followFloats = player->m_playerFollowFloats;
+    // auto followIndex = player->m_followRelated + followFloats.size();
+    // auto followAWhileAgo = followFloats[(followIndex - 18) % followFloats.size()];
+
+    bool isBlind = false;
+    if (m_playerTrail.size() > 18)
+        isBlind = abs(playerPos.y - m_playerTrail[m_playerTrail.size() - 18].pos.y) > 130.f;
+
+    return GameObjectPool::fish(
+        getRng(),
+        [&](const PoolObject *fish)
+        {
+            // tag blacklist
+            if (fish->tags & GLOBAL_EXCLUDE_TAGS)
+                return 0.f;
+
+            // only change gamemode, speed, and size on beat
+            if (!onBeat && fish->tags & (PoolTag::GAMEMODE | PoolTag::SPEED | PoolTag::SIZE_))
+                return 0.f;
+
+            // require tap
+            if (requireTap > 0 && !(fish->tap & requireTap))
+                return 0.f;
+
+            // match state
+            if (!fish->matchesPlayerState(state))
+                return 0.f;
+
+            // !! important things to never do !!
+
+            // late rings in cube, ball, robot, spider
+            if (state & PoolState::NOT_FLYING && fish->tags & PoolTag::RING_LATE)
+                return 0.f;
+
+            // blind jumps
+            if (isBlind && fish->tap & PoolTap::TAP_OR_HOLD)
+                return 0.f;
+
+            // chaining a portal into another portal just looks bad
+            if (m_placeAgainTimer == 0 && fish->tap == PoolTap::ANY)
+                return 0.f;
+
+            // tapping a green orb that results in the player dying to the floor boundary
+            if (state & PoolState::NO_BOUNDS && !upsideDown && playerPos.y < m_boundsFloor + 135.f && fish->tags & PoolTag::FALL && fish->tags && PoolTag::GRAVITY)
+                return 0.f;
+
+            // changing gamemode when it hasn't tapped yet
+            if (!m_hasTappedThisGamemode && fish->tags & PoolTag::GAMEMODE)
+                return 0.f;
+
+            // tap balance
+            float weight = 1.f;
+            if (m_tapBalance < 0 && fish->tap & (PoolTap::NO | PoolTap::ANY))
+                weight = 1.f / -m_tapBalance;
+            if (m_tapBalance > 0 && fish->tap & (PoolTap::TAP_OR_HOLD | PoolTap::RANDOM))
+                weight = 1.f / m_tapBalance;
+
+            if (state & PoolState::NO_BOUNDS)
+            {
+                // hitting the bounds kills you
+                if (upsideDown)
+                {
+                    if (playerPos.y < m_boundsFloor + 225.f && fish->tags & PoolTag::JUMP_HIGH)
+                        return 0.f;
+                    if (playerPos.y < m_boundsFloor + 150.f && fish->tags & PoolTag::JUMP)
+                        return 0.f;
+                }
+                else
+                {
+                    if (playerPos.y > m_boundsCeil - 210.f && fish->tags & PoolTag::JUMP_HIGH)
+                        return 0.f;
+                    if (playerPos.y > m_boundsCeil - 135.f && fish->tags & PoolTag::JUMP)
+                        return 0.f;
+                }
+
+                // if cube is too high, correct it immediately
+                if (playerPos.y > m_boundsCeil - 210.f)
+                {
+                    if (upsideDown && fish->tags & PoolTag::FALL)
+                        return 0.f;
+                    if (!upsideDown && fish->tags & PoolTag::JUMP)
+                        return 0.f;
+                    if (upsideDown && fish->tags & PoolTag::GRAVITY)
+                        weight *= 10.f;
+                }
+            }
+            // aim for middle of bounds
+            else
+            {
+                auto mid = (m_boundsFloor + m_boundsCeil) / 2.f;
+                auto dist = abs(playerPos.y - mid);
+                if (playerPos.y * sign > mid * sign)
+                {
+                    if (fish->tags & PoolTag::JUMP)
+                        weight *= 1 - dist / 125.f;
+                }
+                else
+                {
+                    if (fish->tags & PoolTag::FALL)
+                        weight *= 1 - dist / 125.f;
+                }
+                // dividing by 125 is arbitrary, but somewhat based on the maximum distance of 135
+            }
+
+            return weight;
+        });
+}
+
+void LayoutGeneratorLayer::placeFish(const PoolObject *fish, bool dedup, bool useLastY)
+{
+    log::info("{} {}", m_fishId, fish->name);
+
+    MACRO_PLAYER_DATA;
+    auto playerRect = player->getObjectRect();
+
+    // positioning and placing
+    auto pos = CCPoint{
+        playerPos.x + playerVel.x,
+        playerPos.y + (state & PoolState::GROUNDED ? 0.f : playerVel.y)};
+    if (fish->alignPlayer & (PoolAlign::TL | PoolAlign::TC | PoolAlign::TR))
+        pos.y += playerRect.size.height / 2.f * sign;
+    else if (fish->alignPlayer & (PoolAlign::BL | PoolAlign::BC | PoolAlign::BR))
+        pos.y -= playerRect.size.height / 2.f * sign;
+    if (fish->alignPlayer & (PoolAlign::TL | PoolAlign::CL | PoolAlign::BL))
+        pos.x -= playerRect.size.width / 2.f;
+    else if (fish->alignPlayer & (PoolAlign::TR | PoolAlign::CR | PoolAlign::BR))
+        pos.x += playerRect.size.width / 2.f;
+
+    GameObject *primaryObj = nullptr;
+    if (fish->objectId >= 0)
+    {
+        auto tempObj = editor->createObject(fish->objectId, CCPoint{}, true);
+        if (upsideDown)
+        {
+            if (fish->canFlip())
+                tempObj->setFlipY(true);
+            tempObj->setRotation(-fish->rotation);
+        }
+        else
+            tempObj->setRotation(fish->rotation);
+
+        auto primaryObjRect = getObjectRect(tempObj);
+        editor->removeObject(tempObj, true);
+        if (fish->alignObject & (PoolAlign::TL | PoolAlign::TC | PoolAlign::TR))
+            pos.y -= primaryObjRect.getMaxY() * sign;
+        else if (fish->alignObject & (PoolAlign::BL | PoolAlign::BC | PoolAlign::BR))
+            pos.y -= primaryObjRect.getMinY() * sign;
+        if (fish->alignObject & (PoolAlign::TL | PoolAlign::CL | PoolAlign::BL))
+            pos.x -= primaryObjRect.getMinX();
+        else if (fish->alignObject & (PoolAlign::TR | PoolAlign::CR | PoolAlign::BR))
+            pos.x -= primaryObjRect.getMaxX();
+        if (useLastY)
+            pos.y = m_lastPlacedFishPos.y;
+
+        // check if ok to place the object at the new position
+        bool ok = true;
+        if (isOutOfBounds(pos.y, primaryObjRect.size.height, state & PoolState::HAS_BOUNDS))
+            ok = false;
+        else if (dedup && getObjectNearPoint(pos, 24.f, fish->objectId) != nullptr)
+            ok = false;
+
+        // check if the object interferes with the last couple frames
+        if (ok && !(fish->tags & PoolTag::RING))
+        {
+            primaryObjRect.origin += pos;
+            const float scanBehindPlayer = 15.f;
+            int stage = 0;
+            for (auto it = m_playerTrail.rbegin(); it != m_playerTrail.rend(); ++it)
+            {
+                auto trail = *it;
+                if (trail.pos.x < playerPos.x - scanBehindPlayer)
+                    break;
+                // construct the player rect
+                auto rect = CCRect(
+                    trail.pos.x - trail.rectWidth / 2.f,
+                    trail.pos.y - trail.rectWidth / 2.f,
+                    trail.rectWidth,
+                    trail.rectWidth);
+                // shrink slightly if it's a block because of the inner hitbox tolerance
+                if (fish->tags & PoolTag::BLOCK)
+                    rect.inflateRect(-5.f);
+                // check intersection
+                if (rect.intersectsRect(primaryObjRect))
+                {
+                    // first touch
+                    if (state == 0)
+                        state = 1;
+                    else
+                    // touch + release + touch again = interference
+                    {
+                        log::warn("{} {} CANCELLED due to trail interference!", m_fishId, fish->name);
+                        ok = false;
+                        break;
+                    }
+                }
+                // touch + release
+                else if (state == 1)
+                    state = 2;
+            }
+        }
+
+        if (ok)
+        {
+            primaryObj = editor->createObject(fish->objectId, pos, true);
+            if (upsideDown)
+            {
+                if (fish->canFlip())
+                    primaryObj->setFlipY(true);
+                primaryObj->setRotation(-fish->rotation);
+            }
+            else
+                primaryObj->setRotation(fish->rotation);
+
+            primaryObjRect = getObjectRect(primaryObj);
+            if (fish->tags & PoolTag::SPIDER)
+            {
+                if (fish->rotation == 180.f)
+                {
+                    primaryObj->setFlipY(!primaryObj->m_isFlipY);
+                    primaryObj->setRotation(0.f);
+                }
+                primaryObj->customSetup();
+            }
+            if (auto ringObj = typeinfo_cast<RingObject *>(primaryObj))
+                if (primaryObjRect.intersectsRect(playerRect))
+                    player->addToTouchedRings(ringObj);
+            if (fish->objectId == ObjectId::GAMEMODE_PORTAL_WAVE || (state & PoolState::GAMEMODE_WAVE && fish->objectId == ObjectId::BLOCK))
+            {
+                auto dBlockObj = editor->createObject(ObjectId::D_BLOCK, pos, true);
+                dBlockObj->updateCustomScaleX(3.0);
+                dBlockObj->updateCustomScaleY(3.0);
+            }
+        }
+    }
+
+    // place ground below spider taps, pads, and rings
+    if (fish->tags & PoolTag::SPIDER)
+    {
+        bool up = upsideDown != (bool)(fish->tags & PoolTag::GRAVITY);
+        float yMin, yMax;
+        if (up)
+        {
+            yMin = playerPos.y + (fish->tags & PoolTag::GRAVITY ? 30.f : 60.f);
+            yMax = state & PoolState::HAS_BOUNDS ? m_boundsCeil : yMin + 150.f;
+        }
+        else
+        {
+            yMax = playerPos.y - (fish->tags & PoolTag::GRAVITY ? 30.f : 60.f);
+            yMin = state & PoolState::HAS_BOUNDS ? m_boundsFloor : yMax - 150.f;
+        }
+        float y = std::uniform_real_distribution<float>(yMin, yMax)(getRng());
+        editor->createObject(ObjectId::BLOCK, CCPoint{playerPos.x + playerVel.x, y}, true);
+    }
+
+    // place label
+    if (!useLastY)
+    {
+        placeLabel(
+            fish->name,
+            CCPoint{pos.x, pos.y - 60.f});
+        placeLabel(
+            std::format("{}", m_fishId),
+            CCPoint{pos.x, pos.y - 67.5f});
+    }
+
+    // store this fish
+    m_fishId++;
+    m_lastPlacedFish = fish;
+    m_lastPlacedFishPos = pos;
+}
+
+void LayoutGeneratorLayer::placeSpikeBoundary(
+    CCPoint spikeBottomPos,
+    CCPoint spikeTopPos,
+    CCPoint leftPos,
+    CCPoint midPos,
+    CCPoint rightPos,
+    int midState,
+    float dedupDistance)
+{
+    bool hasBounds = midState & PoolState::HAS_BOUNDS;
+
+    // wave (slopes) (unused)
+    // if (midState & PoolState::GAMEMODE_WAVE)
+    // {
+    //     int objectId = midState & PoolState::SIZE_MINI ? ObjectId::SLOPE_GENTLE : ObjectId::SLOPE;
+    //     if (
+    //         !isOutOfBounds(spikeBottomPos.y, 30.f, hasBounds) && getObjectNearPoint(spikeBottomPos, 30.f, ObjectId::SLOPE) == nullptr && getObjectNearPoint(spikeBottomPos, 30.f, ObjectId::SLOPE_GENTLE) == nullptr)
+    //     {
+    //         auto bottomSpike = editor->createObject(objectId, spikeBottomPos, true);
+    //         if (rightPos.y < midPos.y)
+    //             bottomSpike->setRotation(90.f);
+    //         else
+    //         {
+    //             bottomSpike->setFlipX(true);
+    //             bottomSpike->setRotation(-90.f);
+    //         }
+    //     }
+    //     if (!isOutOfBounds(spikeTopPos.y, 30.f, hasBounds) && getObjectNearPoint(spikeTopPos, 30.f, ObjectId::SLOPE) == nullptr && getObjectNearPoint(spikeTopPos, 30.f, ObjectId::SLOPE_GENTLE) == nullptr)
+    //     {
+    //         auto topSpike = editor->createObject(objectId, spikeTopPos, true);
+    //         if (rightPos.y > midPos.y)
+    //         {
+    //             topSpike->setFlipY(true);
+    //             topSpike->setRotation(-90.f);
+    //         }
+    //         else
+    //             topSpike->setRotation(-90.f);
+    //     }
+    // }
+
+    if (leftPos.y < midPos.y - 1.f && rightPos.y < midPos.y - 1.f && midState & PoolState::GRAVITY_NORMAL)
+        spikeBottomPos.y += midState & PoolState::SIZE_MINI ? 30.f : 15.f;
+    if (leftPos.y > midPos.y + 1.f && rightPos.y > midPos.y + 1.f && midState & PoolState::GRAVITY_REVERSE)
+        spikeTopPos.y -= midState & PoolState::SIZE_MINI ? 30.f : 15.f;
+
+    // bottom
+    if (getObjectNearPoint(spikeBottomPos, dedupDistance, ObjectId::SPIKE) == nullptr)
+    {
+        placeSpikeInBounds(spikeBottomPos, hasBounds, false);
+        if (m_lastSpikeBottomPos.x > 0)
+        {
+            CCPoint spikeBottomPos2 = spikeBottomPos;
+            while (spikeBottomPos2.y > m_lastSpikeBottomPos.y + 30.f)
+            {
+                spikeBottomPos2.y -= 30.f;
+                placeSpikeInBounds(spikeBottomPos2, hasBounds, false);
+            }
+            while (spikeBottomPos.y < m_lastSpikeBottomPos.y - 30.f)
+            {
+                m_lastSpikeBottomPos.y -= 30.f;
+                placeSpikeInBounds(m_lastSpikeBottomPos, hasBounds, false);
+            }
+        }
+        m_lastSpikeBottomPos = spikeBottomPos;
+    }
+
+    // top
+    if (getObjectNearPoint(spikeTopPos, dedupDistance, ObjectId::SPIKE) == nullptr)
+    {
+        placeSpikeInBounds(spikeTopPos, hasBounds, true);
+        if (m_lastSpikeTopPos.x > 0)
+        {
+            while (spikeTopPos.y > m_lastSpikeTopPos.y + 30.f)
+            {
+                m_lastSpikeTopPos.y += 30.f;
+                placeSpikeInBounds(m_lastSpikeTopPos, hasBounds, true);
+            }
+            CCPoint spikeTopPos2 = spikeTopPos;
+            while (spikeTopPos2.y < m_lastSpikeTopPos.y - 30.f)
+            {
+                spikeTopPos2.y += 30.f;
+                placeSpikeInBounds(spikeTopPos2, hasBounds, true);
+            }
+        }
+        m_lastSpikeTopPos = spikeTopPos;
+    }
+}
+
+void LayoutGeneratorLayer::placeSpikeInBounds(CCPoint pos, bool hasBounds, bool flipY)
+{
+    if (!isOutOfBounds(pos.y, 12.f, hasBounds))
+    {
+        LevelEditorLayer::get()->createObject(ObjectId::SPIKE, pos, true)->setFlipY(flipY);
+    }
+}
+
+void LayoutGeneratorLayer::placeLabel(std::string text, CCPoint pos)
+{
+    auto textObj = static_cast<TextGameObject *>(LevelEditorLayer::get()->createObject(ObjectId::TEXT, pos, true));
+    textObj->updateCustomScaleX(0.25);
+    textObj->updateCustomScaleY(0.25);
+    textObj->m_editorLayer = 1;
+    textObj->m_zLayer = ZLayer::T2;
+    textObj->updateTextObject(text, false);
+}
+
+bool LayoutGeneratorLayer::isOutOfBounds(float y, float height, bool hasUpperBound)
+{
+    return y + height / 2.f < m_boundsFloor || (y - height / 2.f > m_boundsCeil && hasUpperBound);
+}
+
+GameObject *LayoutGeneratorLayer::getObjectNearPoint(CCPoint point, float radius, int objectId)
+{
+    auto editor = LevelEditorLayer::get();
+
+    // if the point might be offscreen, iterate through all of the objects.
+    // checking by section only works for things that are onscreen.
+    // the editor camera stops roughly around y = 1300.
+    bool mayBeOffscreen = point.y > 1300.f;
+
+    if (mayBeOffscreen)
+    {
+        for (int i = 0; i < editor->m_objects->count(); i++)
+        {
+            GameObject *obj = static_cast<GameObject *>(editor->m_objects->objectAtIndex(i));
+            if (obj == nullptr)
+                continue;
+            if (objectId >= 0 && obj->m_objectID != objectId)
+                continue;
+            auto pos = obj->getPosition();
+            if (pow(pos.x - point.x, 2) + pow(pos.y - point.y, 2) <= pow(radius, 2))
+                return obj;
+        }
+    }
+    else
+    {
+
+        int xSectionCenter = std::max(0, (int)(point.x / 100));
+        int ySectionCenter = std::max(0, (int)(point.y / 100));
+
+        for (int xSection = xSectionCenter - 1; xSection <= xSectionCenter + 1; xSection++)
+        {
+            for (int ySection = ySectionCenter - 1; ySection <= ySectionCenter + 1; ySection++)
+            {
+                if (xSection > editor->m_sections.size() - 1 || editor->m_sections[xSection] == nullptr)
+                    continue;
+
+                auto &col = *editor->m_sections[xSection];
+                if (ySection > col.size() - 1 || col[ySection] == nullptr)
+                    continue;
+
+                for (auto &obj : *col[ySection])
+                {
+                    if (obj == nullptr)
+                        continue;
+                    // WHY IS THIS A FIELD ROBTOP
+                    if (!obj->m_isActivated)
+                        continue;
+                    if (objectId >= 0 && obj->m_objectID != objectId)
+                        continue;
+                    auto pos = obj->getPosition();
+                    if (pow(pos.x - point.x, 2) + pow(pos.y - point.y, 2) <= pow(radius, 2))
+                        return obj;
+                }
+            }
+        }
+    }
+
+    return nullptr;
+}
+
+// https://github.com/TheSillyDoggo/GeodeMenu/blob/c2452e1242d063be21188afc81c0cd2c7c47224c/src/Hacks/Level/Hitboxes/HitboxNode.cpp#L140
+CCRect LayoutGeneratorLayer::getObjectRect(GameObject *obj)
+{
+    if (obj->m_isObjectRectDirty)
+    {
+        auto save1 = obj->m_isObjectRectDirty;
+        auto save2 = obj->m_boxOffsetCalculated;
+
+        auto rect = obj->getObjectRect();
+
+        obj->m_isObjectRectDirty = save1;
+        obj->m_boxOffsetCalculated = save2;
+
+        return rect;
+    }
+    else
+    {
+        return obj->m_objectRect;
+    }
+}
+
+PoolState LayoutGeneratorLayer::getPlayerGamemode(PlayerObject *player)
+{
+    if (player->m_isShip)
+        return PoolState::GAMEMODE_SHIP;
+    else if (player->m_isBall)
+        return PoolState::GAMEMODE_BALL;
+    else if (player->m_isBird)
+        return PoolState::GAMEMODE_UFO;
+    else if (player->m_isDart)
+        return PoolState::GAMEMODE_WAVE;
+    else if (player->m_isRobot)
+        return PoolState::GAMEMODE_ROBOT;
+    else if (player->m_isSpider)
+        return PoolState::GAMEMODE_SPIDER;
+    else if (player->m_isSwing)
+        return PoolState::GAMEMODE_SWING;
+    else
+        return PoolState::GAMEMODE_CUBE;
+}
+
+int LayoutGeneratorLayer::getPlayerState(PlayerObject *player)
+{
+    int state = 0;
+
+    auto yv = player->getYVelocity() * (player->m_isUpsideDown ? -1 : 1);
+    if (yv > .5)
+        state |= PoolState::RISING;
+    else if (yv < -.5)
+        state |= PoolState::FALLING;
+    if (abs(yv) < 3)
+        state |= PoolState::PEAKING;
+    state |= player->m_isUpsideDown ? PoolState::GRAVITY_REVERSE : PoolState::GRAVITY_NORMAL;
+    state |= player->m_vehicleSize < 1.f ? PoolState::SIZE_MINI : PoolState::SIZE_NORMAL;
+    if (player->m_playerSpeed == 0.7f)
+        state |= PoolState::SPEED_SLOW;
+    else if (player->m_playerSpeed == 0.9f)
+        state |= PoolState::SPEED_NORMAL;
+    else if (player->m_playerSpeed == 1.1f)
+        state |= PoolState::SPEED_2;
+    else if (player->m_playerSpeed == 1.3f)
+        state |= PoolState::SPEED_3;
+    else if (player->m_playerSpeed == 1.6f)
+        state |= PoolState::SPEED_4;
+    state |= getPlayerGamemode(player);
+
+    // ground detection (doesn't work for flying gamemodes)
+    if (state & PoolState::NOT_FLYING)
+        state |= player->m_isOnGround ? PoolState::GROUNDED : PoolState::AIRBORNE;
+    // log::debug("{} {} {} {} {}", player->m_isOnGround, player->m_isOnGround2, player->m_isOnGround3,
+    // player->m_isOnGround4, yv);
+
+    return state;
+}
+
+void LayoutGeneratorLayer::onBuildButton(CCObject *)
+{
+    auto editor = LevelEditorLayer::get();
+
+    // stop building
+    if (m_isBuilding)
+    {
+        editor->m_editorUI->onStopPlaytest(nullptr);
+    }
+    // start building
+    else
+    {
+        reset();
+        editor->m_editorUI->onPlaytest(nullptr);
+        // parse guides?
+        // use editor->m_levelSettings->m_guidelineString, split on ~0~
+    }
+}
+
+void LayoutGeneratorLayer::onSettingsButton(CCObject *)
+{
+    // auto editor = LevelEditorLayer::get();
+
+    // auto x = editor->m_sections;
+    // for (int i = 0; i < x.size(); i++)
+    // {
+    //     if (x[i] == nullptr)
+    //         continue;
+    //     auto &y = *x[i];
+    //     for (int j = 0; j < y.size(); j++)
+    //     {
+    //         if (y[j] == nullptr)
+    //             continue;
+    //         auto &z = *y[j];
+    //         for (int k = 0; k < z.size(); k++)
+    //         {
+    //             GameObject *obj = z[k];
+    //             if (obj == nullptr || !obj->m_isActivated)
+    //                 continue;
+    //             if (obj->m_editorLayer != 0)
+    //                 continue;
+    //             auto pos = obj->getPosition();
+    //             // log::debug("ID {} AT {} {} INDEX {} {} {} DEBUG {} {} {} {} {} {} {} {}",
+    //             // obj->m_objectID, pos.x, pos.y, i, j, k, obj->m_editorEnabled, obj->m_isActivated,
+    //             // obj->m_isDirty, obj->m_isDisabled, obj->m_isDisabled2, obj->m_isUnmodifiedPosDirty,
+    //             // obj->m_isInvisible, obj->m_isInvisibleBlock);
+    //             placeLabel(std::format("{},{}", i, j), CCPoint{pos.x, pos.y + 7.5f});
+    //             placeLabel(std::format("{},{}", std::max(0, (int)(pos.x / 100)), std::max(0, (int)(pos.y / 100))), CCPoint{pos.x, pos.y - 7.5f});
+    //         }
+    //     }
+    // }
+
+    auto popup = SettingsPopup::create();
+    popup->setBpm(m_bpm);
+    popup->setBpmCallback(
+        [this](float bpm)
+        {
+            m_bpm = bpm;
+        });
+    popup->show();
+}
+
+void LayoutGeneratorLayer::playtestStopped()
+{
+    m_isBuilding = false;
+}
