@@ -336,9 +336,8 @@ void LayoutGeneratorLayer::update(float dt)
         CCPoint{spikeX, yMin},
         CCPoint{spikeX, yMax},
         leftTrail.pos,
-        midTrail.pos,
+        midTrail,
         playerPos,
-        midTrail.state,
         (leftTrail.state & PoolState::GAMEMODE_SPIDER || state & PoolState::GAMEMODE_SPIDER
              // when performing a spider teleport, the player uses the inner rect for collision,
              // which is approximately the same width as a spike (6). except for wave, which is not handled.
@@ -762,12 +761,12 @@ void LayoutGeneratorLayer::placeSpikeBoundary(
     CCPoint spikeBottomPos,
     CCPoint spikeTopPos,
     CCPoint leftPos,
-    CCPoint midPos,
+    const PlayerTrailData &midTrail,
     CCPoint rightPos,
-    int midState,
     float dedupDistance)
 {
-    bool hasBounds = midState & PoolState::HAS_BOUNDS;
+    auto midPos = midTrail.pos;
+    auto midState = midTrail.state;
 
     // wave (slopes) (unused)
     // if (midState & PoolState::GAMEMODE_WAVE)
@@ -806,19 +805,19 @@ void LayoutGeneratorLayer::placeSpikeBoundary(
     // bottom
     if (getObjectNearPoint(spikeBottomPos, dedupDistance, ObjectId::SPIKE) == nullptr)
     {
-        placeSpikeInBounds(spikeBottomPos, hasBounds, false);
+        placeSpikeInBounds(spikeBottomPos, midTrail, false);
         if (m_lastSpikeBottomPos.x > 0)
         {
             CCPoint spikeBottomPos2 = spikeBottomPos;
             while (spikeBottomPos2.y > m_lastSpikeBottomPos.y + 30.f)
             {
                 spikeBottomPos2.y -= 30.f;
-                placeSpikeInBounds(spikeBottomPos2, hasBounds, false);
+                placeSpikeInBounds(spikeBottomPos2, midTrail, false);
             }
             while (spikeBottomPos.y < m_lastSpikeBottomPos.y - 30.f)
             {
                 m_lastSpikeBottomPos.y -= 30.f;
-                placeSpikeInBounds(m_lastSpikeBottomPos, hasBounds, false);
+                placeSpikeInBounds(m_lastSpikeBottomPos, midTrail, false);
             }
         }
         m_lastSpikeBottomPos = spikeBottomPos;
@@ -827,28 +826,28 @@ void LayoutGeneratorLayer::placeSpikeBoundary(
     // top
     if (getObjectNearPoint(spikeTopPos, dedupDistance, ObjectId::SPIKE) == nullptr)
     {
-        placeSpikeInBounds(spikeTopPos, hasBounds, true);
+        placeSpikeInBounds(spikeTopPos, midTrail, true);
         if (m_lastSpikeTopPos.x > 0)
         {
             while (spikeTopPos.y > m_lastSpikeTopPos.y + 30.f)
             {
                 m_lastSpikeTopPos.y += 30.f;
-                placeSpikeInBounds(m_lastSpikeTopPos, hasBounds, true);
+                placeSpikeInBounds(m_lastSpikeTopPos, midTrail, true);
             }
             CCPoint spikeTopPos2 = spikeTopPos;
             while (spikeTopPos2.y < m_lastSpikeTopPos.y - 30.f)
             {
                 spikeTopPos2.y += 30.f;
-                placeSpikeInBounds(spikeTopPos2, hasBounds, true);
+                placeSpikeInBounds(spikeTopPos2, midTrail, true);
             }
         }
         m_lastSpikeTopPos = spikeTopPos;
     }
 }
 
-void LayoutGeneratorLayer::placeSpikeInBounds(CCPoint pos, bool hasBounds, bool flipY)
+void LayoutGeneratorLayer::placeSpikeInBounds(CCPoint pos, const PlayerTrailData &trail, bool flipY)
 {
-    if (!isOutOfBounds(pos.y, 12.f, hasBounds))
+    if (!isOutOfBounds(pos.y, 12.f, trail.state & PoolState::HAS_BOUNDS, trail.boundsCeil, trail.boundsFloor))
     {
         LevelEditorLayer::get()->createObject(ObjectId::SPIKE, pos, true)->setFlipY(flipY);
     }
@@ -859,9 +858,14 @@ bool LayoutGeneratorLayer::isClicking(PlayerObject *player)
     return player->m_holdingButtons[(int)PlayerButton::Jump];
 }
 
+bool LayoutGeneratorLayer::isOutOfBounds(float y, float height, bool hasUpperBound, float boundsCeil, float boundsFloor)
+{
+    return y + height / 2.f < boundsFloor || (y - height / 2.f > boundsCeil && hasUpperBound);
+}
+
 bool LayoutGeneratorLayer::isOutOfBounds(float y, float height, bool hasUpperBound)
 {
-    return y + height / 2.f < m_boundsFloor || (y - height / 2.f > m_boundsCeil && hasUpperBound);
+    return isOutOfBounds(y, height, hasUpperBound, m_boundsCeil, m_boundsFloor);
 }
 
 GameObject *LayoutGeneratorLayer::getObjectNearPoint(CCPoint point, float radius, int objectId)

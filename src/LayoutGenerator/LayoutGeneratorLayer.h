@@ -84,14 +84,15 @@ protected:
 		CCPoint spikeBottomPos,
 		CCPoint spikeTopPos,
 		CCPoint leftPos,
-		CCPoint midPos,
+		const PlayerTrailData &midTrail,
 		CCPoint rightPos,
-		int midState,
 		float dedupDistance);
 
-	void placeSpikeInBounds(CCPoint pos, bool hasBounds, bool flipY);
+	void placeSpikeInBounds(CCPoint pos, const PlayerTrailData &trail, bool flipY);
 
 	bool isClicking(PlayerObject *player);
+
+	bool isOutOfBounds(float y, float height, bool hasUpperBound, float boundsCeil, float boundsFloor);
 
 	bool isOutOfBounds(float y, float height, bool hasUpperBound);
 
