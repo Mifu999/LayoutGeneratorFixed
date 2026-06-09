@@ -40,11 +40,11 @@ struct PoolObject
         this->name = name;
     }
 
-    PoolObject &withPartial(PartialPoolObject partial, int extraTags = 0)
+    PoolObject &withPartial(PartialPoolObject partial, int extraTags = 0, float shareMultiplier = 1.f)
     {
         tags = partial.tags | extraTags;
         objectId = partial.objectId;
-        shares = partial.shares;
+        shares = partial.shares * shareMultiplier;
         return *this;
     }
 

@@ -24,22 +24,23 @@ enum PoolTag
 {
     // block type
     BLOCK = 1 << 0,
-    PAD = 1 << 1,
-    RING_BUFFERED = 1 << 2,
-    RING_LATE = 1 << 3,
+    BREAKABLE_BLOCK = 1 << 1,
+    PAD = 1 << 2,
+    RING_BUFFERED = 1 << 3,
+    RING_LATE = 1 << 4,
     RING = RING_BUFFERED | RING_LATE,
-    PORTAL = 1 << 4,
+    PORTAL = 1 << 5,
 
     // what the block does
-    JUMP = 1 << 5,      // sends player upwards
-    JUMP_HIGH = 1 << 6, // sends player upwards a lot (red pad/orb)
-    FALL = 1 << 7,      // sends player downwards
-    GRAVITY = 1 << 8,   // changes player gravity
-    SIZE_ = 1 << 9,     // changes player size
-    SPEED = 1 << 10,    // changes player speed
-    GAMEMODE = 1 << 11, // changes gamemode
-    SPIDER = 1 << 12,   // teleports player to ground
-    BUFFERED = 1 << 13, // can only be interacted with when a tap is buffered
+    JUMP = 1 << 6,      // sends player upwards
+    JUMP_HIGH = 1 << 7, // sends player upwards a lot (red pad/orb)
+    FALL = 1 << 8,      // sends player downwards
+    GRAVITY = 1 << 9,   // changes player gravity
+    SIZE_ = 1 << 10,    // changes player size
+    SPEED = 1 << 11,    // changes player speed
+    GAMEMODE = 1 << 12, // changes gamemode
+    SPIDER = 1 << 13,   // teleports player to ground
+    BUFFERED = 1 << 14, // can only be interacted with when a tap is buffered
 };
 
 enum PoolState

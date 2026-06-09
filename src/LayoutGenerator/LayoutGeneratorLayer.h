@@ -90,6 +90,8 @@ protected:
 
 	void placeSpikeInBounds(CCPoint pos, const PlayerTrailData &trail, bool flipY);
 
+	bool doesRectInterfereWithTrail(CCRect primaryObjRect, float playerX, bool isBlock, bool isMini);
+
 	bool isClicking(PlayerObject *player);
 
 	bool isOutOfBounds(float y, float height, bool hasUpperBound, float boundsCeil, float boundsFloor);

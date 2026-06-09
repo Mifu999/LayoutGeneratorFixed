@@ -108,7 +108,7 @@ const std::vector<PoolObject> GameObjectPool::POOL = []()
             .withTags(PoolTag::BLOCK)
             .withShares(50.f)
             .withObjectId(ObjectId::BLOCK)
-            .withStates(PoolState::AIRBORNE, PoolState::FALLING)
+            .withStates(PoolState::AIRBORNE, PoolState::FALLING | PoolState::PEAKING)
             .withAlign(PoolAlign::BC, PoolAlign::TC)
             .withTap(PoolTap::NO)
             .withKeepActive(true));
@@ -156,15 +156,54 @@ const std::vector<PoolObject> GameObjectPool::POOL = []()
             .withTap(PoolTap::NO));
 
     pool.push_back(
-        PoolObject("flying platform")
+        PoolObject("tap flying platform")
             .withTags(PoolTag::BLOCK)
             .withShares(12.5f)
             .withObjectId(ObjectId::BLOCK)
-            // bugged specifically with mini wave, hence size_normal|not_wave
-            .withStates(PoolState::FLYING, PoolState::FALLING | PoolState::PEAKING, PoolState::SIZE_NORMAL | PoolState::NOT_WAVE)
+            .withStates(PoolState::TAP_FLYING, PoolState::FALLING | PoolState::PEAKING)
             .withAlign(PoolAlign::BC, PoolAlign::TC)
             .withTap(PoolTap::NO)
             .withKeepActive(true));
+
+    pool.push_back(
+        PoolObject("hold flying platform")
+            .withTags(PoolTag::BLOCK)
+            .withShares(5.f)
+            .withObjectId(ObjectId::BLOCK)
+            // bugged specifically with mini wave, hence size_normal|not_wave
+            .withStates(PoolState::HOLD_FLYING, PoolState::FALLING | PoolState::PEAKING, PoolState::SIZE_NORMAL | PoolState::NOT_WAVE)
+            .withAlign(PoolAlign::BC, PoolAlign::TC)
+            .withTap(PoolTap::NO)
+            .withKeepActive(true));
+
+    pool.push_back(
+        PoolObject("hold flying platform hold")
+            .withTags(PoolTag::BLOCK)
+            .withShares(5.f)
+            .withObjectId(ObjectId::BLOCK)
+            .withStates(PoolState::HOLD_FLYING, PoolState::RISING | PoolState::PEAKING, PoolState::SIZE_NORMAL | PoolState::NOT_WAVE)
+            .withAlign(PoolAlign::TC, PoolAlign::BC)
+            .withTap(PoolTap::HOLD)
+            .withKeepActive(true));
+
+    // breakable blocks
+    pool.push_back(
+        PoolObject("breakable block grounded")
+            .withTags(PoolTag::BREAKABLE_BLOCK)
+            .withShares(.01f)
+            .withObjectId(143)
+            .withStates(PoolState::GROUNDED)
+            .withAlign(PoolAlign::CR, PoolAlign::CL)
+            .withTap(PoolTap::NO));
+
+    pool.push_back(
+        PoolObject("breakable block peaking")
+            .withTags(PoolTag::BREAKABLE_BLOCK)
+            .withShares(.01f)
+            .withObjectId(143)
+            .withStates(PoolState::AIRBORNE, PoolState::PEAKING)
+            .withAlign(PoolAlign::CR, PoolAlign::CL)
+            .withTap(PoolTap::ANY));
 
     // pads
     for (auto &p : {
@@ -183,6 +222,13 @@ const std::vector<PoolObject> GameObjectPool::POOL = []()
                 .withStates(PoolState::GROUNDED)
                 .withAlign(PoolAlign::BR, PoolAlign::BL)
                 .withTap(PoolTap::NO));
+
+        pool.push_back(
+            PoolObject("pad rising")
+                .withPartial(p, 0, .1f)
+                .withStates(PoolState::AIRBORNE, PoolState::RISING)
+                .withAlign(PoolAlign::TC, PoolAlign::BC)
+                .withTap(PoolTap::ANY));
 
         pool.push_back(
             PoolObject("pad falling")
@@ -226,15 +272,13 @@ const std::vector<PoolObject> GameObjectPool::POOL = []()
 
         pool.push_back(
             PoolObject("jump ring hold flying")
-                .withPartial(p, PoolTag::RING_LATE)
-                .withShares(p.shares * .5f)
+                .withPartial(p, PoolTag::RING_LATE, .5f)
                 .withStates(PoolState::HOLD_FLYING, PoolState::NOT_WAVE)
                 .withTap(PoolTap::TAP));
 
         pool.push_back(
             PoolObject("jump ring hold flying hold")
-                .withPartial(p, PoolTag::RING_LATE)
-                .withShares(p.shares * .5f)
+                .withPartial(p, PoolTag::RING_LATE, .5f)
                 .withStates(PoolState::HOLD_FLYING, PoolState::NOT_WAVE)
                 .withTap(PoolTap::HOLD));
 

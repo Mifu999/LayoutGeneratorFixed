@@ -16,7 +16,7 @@ SettingsPopup *SettingsPopup::create(Settings *settings)
 
 bool SettingsPopup::init(Settings *settings)
 {
-    if (!Popup::init(340.f, 200.f))
+    if (!Popup::init(340.f, 230.f))
         return false;
 
     m_settings = settings;
@@ -51,7 +51,7 @@ bool SettingsPopup::init(Settings *settings)
     bpm->setMaxCharCount(8);
     bpm->focus();
     bpm->setID("bpm-input"_spr);
-    m_mainLayer->addChildAtPosition(bpm, Anchor::Center, CCPoint{-110.f, 25.f});
+    m_mainLayer->addChildAtPosition(bpm, Anchor::Top, CCPoint{-110.f, -75.f});
 
     auto usePlayerClicks = createCheckbox(
         "Use player clicks",
@@ -59,7 +59,7 @@ bool SettingsPopup::init(Settings *settings)
         this,
         menu_selector(SettingsPopup::onCheckboxUsePlayerClicks));
     usePlayerClicks->setID("use-player-clicks"_spr);
-    m_mainLayer->addChildAtPosition(usePlayerClicks, Anchor::Center, CCPoint{185.f, 45.f});
+    m_mainLayer->addChildAtPosition(usePlayerClicks, Anchor::Top, CCPoint{185.f, -55.f});
 
     auto dontChangeGamemode = createCheckbox(
         "Dont change gamemode",
@@ -67,7 +67,7 @@ bool SettingsPopup::init(Settings *settings)
         this,
         menu_selector(SettingsPopup::onCheckboxDontChangeGamemode));
     dontChangeGamemode->setID("dont-change-gamemode"_spr);
-    m_mainLayer->addChildAtPosition(dontChangeGamemode, Anchor::Center, CCPoint{185.f, 25.f});
+    m_mainLayer->addChildAtPosition(dontChangeGamemode, Anchor::Top, CCPoint{185.f, -75.f});
 
     auto makeDebugTrail = createCheckbox(
         "Make debug trail",
@@ -75,7 +75,7 @@ bool SettingsPopup::init(Settings *settings)
         this,
         menu_selector(SettingsPopup::onCheckboxMakeDebugTrail));
     makeDebugTrail->setID("make-debug-trail"_spr);
-    m_mainLayer->addChildAtPosition(makeDebugTrail, Anchor::Center, CCPoint{185.f, 5.f});
+    m_mainLayer->addChildAtPosition(makeDebugTrail, Anchor::Top, CCPoint{185.f, -95.f});
 
     auto examples = CCLabelBMFont::create(
         "Examples:\n"
@@ -83,13 +83,16 @@ bool SettingsPopup::init(Settings *settings)
         "Creo - Lightmare (914838) - 107bpm\n"
         "ConnorGrail - What Is It You Seek? (1286522) - 108bpm\n"
         "Creo - Ballistic Funk (905109) - 113bpm\n"
+        "Waterflame - Endgame (587069) - 123bpm\n"
         "Acid-Notation - The Yandere's Puppet Show (722366) - 128bpm\n"
         "meganeko - Milkshake (684652) - 128bpm\n"
-        "EnV - Uprise (513064) - 130bpm",
+        "EnV - Uprise (513064) - 130bpm\n"
+        "Waterflame - Thumper (575768) - 138bpm\n"
+        "Acid-Notation - Boss Theme Remix (709185) - 139bpm",
         "bigFont.fnt");
     examples->setScale(0.3f);
     examples->setID("examples"_spr);
-    m_mainLayer->addChildAtPosition(examples, Anchor::Center, CCPoint{0.f, -50.f});
+    m_mainLayer->addChildAtPosition(examples, Anchor::Bottom, CCPoint{0.f, 65.f});
 
     return true;
 }

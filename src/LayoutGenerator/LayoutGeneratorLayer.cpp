@@ -262,6 +262,7 @@ void LayoutGeneratorLayer::update(float dt)
                 else if (gamemode & PoolState::HOLD_FLYING && std::uniform_int_distribution<int>(1, 2)(getRng()) == 1)
                     m_shouldTap = std::uniform_int_distribution<int>(1, 2)(getRng()) == 1 ? PoolTap::NO : PoolTap::HOLD;
                 // place another object soon, because we can
+                // maybe a fish->canPlaceAgain field would be useful in the future? or fish->placeAgainChance?
                 if (std::uniform_int_distribution<int>(1, 2)(getRng()) == 1)
                 {
                     m_placeAgainTimer = 2;
@@ -615,29 +616,10 @@ void LayoutGeneratorLayer::placeFish(const PoolObject *fish, bool dedup, bool us
         if (ok && !(fish->tags & PoolTag::RING))
         {
             primaryObjRect.origin += pos;
-            for (auto it = m_playerTrail.rbegin(); it != m_playerTrail.rend(); ++it)
+            if (doesRectInterfereWithTrail(primaryObjRect, playerPos.x, fish->tags & PoolTag::BLOCK, state & PoolState::SIZE_MINI))
             {
-                auto trail = *it;
-                if (trail.pos.x > playerPos.x + 10.f)
-                    continue;
-                if (trail.pos.x < playerPos.x - 30.f)
-                    break;
-                // construct the player rect
-                auto rect = CCRect(
-                    trail.pos.x - trail.rectWidth / 2.f,
-                    trail.pos.y - trail.rectWidth / 2.f,
-                    trail.rectWidth,
-                    trail.rectWidth);
-                // shrink slightly if it's a block because of the inner hitbox tolerance
-                if (fish->tags & PoolTag::BLOCK)
-                    rect.inflateRect(-5.f);
-                // check intersection
-                if (rect.intersectsRect(primaryObjRect))
-                {
-                    log::warn("{} {} CANCELLED due to trail interference!", m_fishId, fish->name);
-                    ok = false;
-                    break;
-                }
+                ok = false;
+                log::warn("{} {} CANCELLED due to trail interference!", m_fishId, fish->name);
             }
         }
 
@@ -708,7 +690,16 @@ void LayoutGeneratorLayer::placeFish(const PoolObject *fish, bool dedup, bool us
             yMin = state & PoolState::HAS_BOUNDS ? m_boundsFloor : yMax - 150.f;
         }
         float y = std::uniform_real_distribution<float>(yMin, yMax)(getRng());
-        editor->createObject(ObjectId::BLOCK, CCPoint{playerPos.x + playerVel.x, y}, true);
+        while (true)
+        {
+            auto obj = editor->createObject(ObjectId::BLOCK, CCPoint{playerPos.x + playerVel.x, y}, true);
+            if (!doesRectInterfereWithTrail(getObjectRect(obj), playerPos.x, true, state & PoolState::SIZE_MINI))
+                break;
+            editor->removeObject(obj, true);
+            if (state & PoolState::HAS_BOUNDS)
+                break;
+            y += 30.f * (up ? 1 : -1);
+        }
     }
 
     // place label
@@ -851,6 +842,35 @@ void LayoutGeneratorLayer::placeSpikeInBounds(CCPoint pos, const PlayerTrailData
     {
         LevelEditorLayer::get()->createObject(ObjectId::SPIKE, pos, true)->setFlipY(flipY);
     }
+}
+
+bool LayoutGeneratorLayer::doesRectInterfereWithTrail(CCRect primaryObjRect, float playerX, bool isBlock, bool isMini)
+{
+    for (auto it = m_playerTrail.rbegin(); it != m_playerTrail.rend(); ++it)
+    {
+        auto trail = *it;
+        if (trail.pos.x > playerX + 10.f)
+            continue;
+        if (trail.pos.x < playerX - 30.f)
+            break;
+
+        // construct the player rect
+        auto rect = CCRect(
+            trail.pos.x - trail.rectWidth / 2.f,
+            trail.pos.y - trail.rectWidth / 2.f,
+            trail.rectWidth,
+            trail.rectWidth);
+
+        // shrink slightly if it's a block because of the inner hitbox tolerance
+        if (isBlock)
+            rect.inflateRect(isMini ? -2.f : -5.f);
+
+        // check intersection
+        if (rect.intersectsRect(primaryObjRect))
+            return true;
+    }
+
+    return false;
 }
 
 bool LayoutGeneratorLayer::isClicking(PlayerObject *player)
