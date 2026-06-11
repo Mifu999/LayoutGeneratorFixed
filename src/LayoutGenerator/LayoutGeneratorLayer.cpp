@@ -583,7 +583,18 @@ void LayoutGeneratorLayer::placeFish(const PoolObject *fish, bool dedup, bool us
     GameObject *primaryObj = nullptr;
     if (fish->objectId >= 0)
     {
-        auto tempObj = editor->createObject(fish->objectId, CCPoint{}, true);
+        // FIX: measure the object rect with a STANDALONE object instead of
+        // createObject() + removeObject(). createObject() inserts the temp object into the
+        // editor section grid (m_sections); removeObject() releases it but leaves a DANGLING
+        // pointer behind in that section. getObjectNearPoint() later scans the grid and reads
+        // obj->m_isActivated on that freed pointer -> EXCEPTION_ACCESS_VIOLATION.
+        // GameObject::createWithKey() never touches the grid, so nothing is left dangling.
+        auto tempObj = GameObject::createWithKey(fish->objectId);
+        if (tempObj == nullptr)
+        {
+            log::warn("createWithKey({}) failed, skipping fish {}", fish->objectId, fish->name);
+            return;
+        }
         if (upsideDown)
         {
             if (fish->canFlip())
@@ -594,7 +605,7 @@ void LayoutGeneratorLayer::placeFish(const PoolObject *fish, bool dedup, bool us
             tempObj->setRotation(fish->rotation);
 
         auto primaryObjRect = getObjectRect(tempObj);
-        editor->removeObject(tempObj, true);
+        // tempObj is autoreleased and was never added to the editor; just drop the reference.
         if (fish->alignObject & PoolAlign::T)
             pos.y -= primaryObjRect.getMaxY() * sign;
         else if (fish->alignObject & PoolAlign::B)
@@ -911,6 +922,41 @@ bool LayoutGeneratorLayer::isOutOfBounds(float y, float height, bool hasUpperBou
     return isOutOfBounds(y, height, hasUpperBound, m_boundsCeil, m_boundsFloor);
 }
 
+// FIX: a GameObject* pulled from the editor section grid (m_sections) can be a stale/freed
+// pointer (e.g. left behind by a createObject/removeObject trial placement). Reading any
+// member on it (m_isActivated, m_objectID, getPosition) faults with EXCEPTION_ACCESS_VIOLATION.
+// A wild pointer can't be validated in portable C++, so on Windows we wrap the reads in
+// structured exception handling and treat a bad slot as "no match" instead of crashing.
+// This scope intentionally contains NO C++ objects with destructors (required for __try).
+#ifdef GEODE_IS_WINDOWS
+static bool ln_sectionObjectMatches(GameObject *obj, int objectId, float px, float py, float radius)
+{
+    __try
+    {
+        if (!obj->m_isActivated)
+            return false;
+        if (objectId >= 0 && obj->m_objectID != objectId)
+            return false;
+        auto pos = obj->getPosition();
+        return pow(pos.x - px, 2) + pow(pos.y - py, 2) <= pow(radius, 2);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return false;
+    }
+}
+#else
+static bool ln_sectionObjectMatches(GameObject *obj, int objectId, float px, float py, float radius)
+{
+    if (!obj->m_isActivated)
+        return false;
+    if (objectId >= 0 && obj->m_objectID != objectId)
+        return false;
+    auto pos = obj->getPosition();
+    return pow(pos.x - px, 2) + pow(pos.y - py, 2) <= pow(radius, 2);
+}
+#endif
+
 GameObject *LayoutGeneratorLayer::getObjectNearPoint(CCPoint point, float radius, int objectId)
 {
     auto editor = LevelEditorLayer::get();
@@ -972,13 +1018,8 @@ GameObject *LayoutGeneratorLayer::getObjectNearPoint(CCPoint point, float radius
                 {
                     if (obj == nullptr)
                         continue;
-                    // WHY IS THIS A FIELD ROBTOP
-                    if (!obj->m_isActivated)
-                        continue;
-                    if (objectId >= 0 && obj->m_objectID != objectId)
-                        continue;
-                    auto pos = obj->getPosition();
-                    if (pow(pos.x - point.x, 2) + pow(pos.y - point.y, 2) <= pow(radius, 2))
+                    // reads obj members under SEH so a stale section pointer is skipped, not fatal
+                    if (ln_sectionObjectMatches(obj, objectId, point.x, point.y, radius))
                         return obj;
                 }
             }
