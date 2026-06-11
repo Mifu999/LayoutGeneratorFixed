@@ -183,7 +183,8 @@ void LayoutGeneratorLayer::update(float dt)
     else if (m_placeAgainTimer == 0)
     {
         shouldPlace = true;
-        if (useRandomClicks && m_lastPlacedFish->tags & PoolTag::SPIDER)
+        // FIX: m_lastPlacedFish is null right after reset(); guard before deref.
+        if (useRandomClicks && m_lastPlacedFish && m_lastPlacedFish->tags & PoolTag::SPIDER)
             requireTap |= PoolTap::NO | PoolTap::ANY;
     }
     // avoid reaching terminal velocity (-15.f)
@@ -311,8 +312,8 @@ void LayoutGeneratorLayer::update(float dt)
     const float scanBehindPlayer = 60.f;
     float yMin = FLT_MAX;
     float yMax = -FLT_MAX;
-    PlayerTrailData leftTrail;
-    PlayerTrailData midTrail;
+    PlayerTrailData leftTrail{};
+    PlayerTrailData midTrail{};
     float spikeX = playerPos.x - scanBehindPlayer / 2;
     for (auto it = m_playerTrail.rbegin(); it != m_playerTrail.rend(); ++it)
     {
@@ -494,7 +495,7 @@ const PoolObject *LayoutGeneratorLayer::fishLegally(int excludeTags, int require
                 return 0.f;
 
             // tapping a green orb that results in the player dying to the floor boundary
-            if (state & PoolState::NO_BOUNDS && !upsideDown && playerPos.y < m_boundsFloor + 135.f && fish->tags & PoolTag::FALL && fish->tags && PoolTag::GRAVITY)
+            if (state & PoolState::NO_BOUNDS && !upsideDown && playerPos.y < m_boundsFloor + 135.f && fish->tags & PoolTag::FALL && fish->tags & PoolTag::GRAVITY)
                 return 0.f;
 
             // changing gamemode when it hasn't tapped yet
@@ -861,7 +862,8 @@ void LayoutGeneratorLayer::placeSpikeInBounds(CCPoint pos, const PlayerTrailData
 {
     if (!isOutOfBounds(pos.y, 12.f, trail.state & PoolState::HAS_BOUNDS, trail.boundsCeil, trail.boundsFloor))
     {
-        LevelEditorLayer::get()->createObject(ObjectId::SPIKE, pos, true)->setFlipY(flipY);
+        if (auto spike = LevelEditorLayer::get()->createObject(ObjectId::SPIKE, pos, true))
+            spike->setFlipY(flipY);
     }
 }
 
@@ -938,18 +940,35 @@ GameObject *LayoutGeneratorLayer::getObjectNearPoint(CCPoint point, float radius
         int xSectionCenter = std::max(0, (int)(point.x / 100));
         int ySectionCenter = std::max(0, (int)(point.y / 100));
 
+        // FIX: m_sections.size() / col.size() return size_t (unsigned).
+        // Comparing a possibly-negative int (xSection / ySection can be -1) against
+        // an unsigned size, OR computing `size() - 1` when the vector is empty,
+        // underflows to SIZE_MAX and lets a -1 index through -> out-of-bounds read
+        // -> EXCEPTION_ACCESS_VIOLATION. We do all bounds math in signed ints.
+        const int sectionCount = static_cast<int>(editor->m_sections.size());
+
         for (int xSection = xSectionCenter - 1; xSection <= xSectionCenter + 1; xSection++)
         {
+            if (xSection < 0 || xSection >= sectionCount)
+                continue;
+
+            auto colPtr = editor->m_sections[xSection];
+            if (colPtr == nullptr)
+                continue;
+
+            auto &col = *colPtr;
+            const int colCount = static_cast<int>(col.size());
+
             for (int ySection = ySectionCenter - 1; ySection <= ySectionCenter + 1; ySection++)
             {
-                if (xSection > editor->m_sections.size() - 1 || editor->m_sections[xSection] == nullptr)
+                if (ySection < 0 || ySection >= colCount)
                     continue;
 
-                auto &col = *editor->m_sections[xSection];
-                if (ySection > col.size() - 1 || col[ySection] == nullptr)
+                auto cellPtr = col[ySection];
+                if (cellPtr == nullptr)
                     continue;
 
-                for (auto &obj : *col[ySection])
+                for (auto &obj : *cellPtr)
                 {
                     if (obj == nullptr)
                         continue;
